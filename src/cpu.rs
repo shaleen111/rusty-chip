@@ -6,12 +6,15 @@ use rand::Rng;
 
 use crate::fonts;
 
-// 4 => r,g,b,a
-// 64 * 32 => resolution of chip8
-const VIDEO_BUFFER_SIZE: usize = 4 * 64 * 32;
+const VIDEO_WIDTH: usize = 64;
+const VIDEO_HEIGHT: usize = 32;
+const VIDEO_BUFFER_SIZE: usize = VIDEO_WIDTH * VIDEO_HEIGHT;
+
 const ROM_MEMORY_START: u16 = 0x200;
 
-pub struct CPU
+const NUM_KEYS: u8 = 16;
+
+pub struct CHIP_8
 {
     registers: [u8; 16],
     memory: [u8; 4096],
@@ -21,15 +24,16 @@ pub struct CPU
     stack_pointer: u8,
     delay_timer: u8,
     sound_timer: u8,
-    keypad: [u8; 16],
-    video: [u8; VIDEO_BUFFER_SIZE],
+    keypad: [bool; NUM_KEYS as usize],
+    video: [bool; VIDEO_BUFFER_SIZE],
+    redraw: bool,
 }
 
-impl CPU
+impl CHIP_8
 {
     pub fn new() -> Self
     {
-        let mut c = CPU
+        let mut c = CHIP_8
         {
             registers: [0; 16],
             memory: [0; 4096],
@@ -39,11 +43,11 @@ impl CPU
             stack_pointer: 0,
             delay_timer: 0,
             sound_timer: 0,
-            keypad: [0; 16],
-            video: [0; VIDEO_BUFFER_SIZE],
+            keypad: [false; 16],
+            video: [false; VIDEO_BUFFER_SIZE],
+            redraw: false,
         };
 
-        // Load fonts
         for i in 0..fonts::FONTS.len()
         {
             c.memory[fonts::FONT_MEMORY_START as usize + i]  = fonts::FONTS[i];
@@ -77,18 +81,30 @@ impl CPU
         most_sig_byte | least_sig_byte
     }
 
+    fn check_keypad(&self) -> Option<u8>
+    {
+        for i in 0..NUM_KEYS
+        {
+            if self.keypad[i as usize]
+            {
+                return Some(i);
+            }
+        }
+        None
+    }
+
     fn fetch_and_execute(&mut self)
     {
         let opcode = self.mem_read_u16();
 
-        let nib1 = (opcode & 0xF000) << 12;
-        let nib2 = (opcode & 0x0F00) << 8;
-        let nib3 = (opcode & 0x00F0) << 4;
-        let nib4 = opcode & 0x000F;
+        let nib_1 = ((opcode & 0xF000) << 12) as u8;
+        let nib_2 = ((opcode & 0x0F00) << 8) as u8;
+        let nib_3 = ((opcode & 0x00F0) << 4) as u8;
+        let nib_4 = (opcode & 0x000F) as u8;
 
-        match (nib1, nib2, nib3, nib4)
+        match (nib_1, nib_2, nib_3, nib_4)
         {
-            (0, _, 0xE, 0) => self.video = [0; VIDEO_BUFFER_SIZE],
+            (0, _, 0xE, 0) => self.video = [false; VIDEO_BUFFER_SIZE],
 
             (0, _, 0xE, 0xE) =>
             {
@@ -240,10 +256,80 @@ impl CPU
 
             (0xD, x, y, n) =>
             {
+                let x = self.registers[x as usize] % VIDEO_WIDTH as u8;
+                let y = self.registers[y as usize] % VIDEO_HEIGHT as u8;
 
+                for i in 0..n
+                {
+                    let row_of_sprite = self.memory[(self.index + i as u16) as usize];
+                    for j in 0..8
+                    {
+                        let pixel = (row_of_sprite & (0x80 >> j)) == 1;
+
+                        let video_pixel = &mut self.video[(y + i) as usize * VIDEO_WIDTH + (x + j) as usize];
+
+                        if pixel && *video_pixel
+                        {
+                            self.registers[0xF] = 1;
+                            *video_pixel ^= true;
+                        }
+
+                    }
+                }
+            },
+
+            (0xE, x, i, j) =>
+            {
+                match (i, j)
+                {
+                    (9, 0xE) =>
+                    {
+                        if self.keypad[self.registers[x as usize] as usize]
+                        {
+                            self.program_counter += 2;
+                        }
+                    },
+
+                    (0xA, 1) =>
+                    {
+                        if !self.keypad[self.registers[x as usize] as usize]
+                        {
+                            self.program_counter += 2;
+                        }
+                    },
+
+                    _ => panic!("Error Could Not Interpret Instruction {:x}", opcode),
+                }
+            },
+
+            (0xF, x, i, j) =>
+            {
+                match (i, j)
+                {
+                    (0, 7) => self.registers[x as usize] = self.delay_timer,
+
+                    (0, 0xA) =>
+                    {
+                        match self.check_keypad()
+                        {
+                            Some(key) => self.registers[x as usize] = key,
+                            None => self.program_counter -= 2,
+                        }
+                    },
+
+                    (1, 5) => self.delay_timer = self.registers[x as usize],
+
+                    (1, 8) => self.sound_timer = self.registers[x as usize],
+
+                    (1, 0xE) => self.index += self.registers[x as usize] as u16,
+
+                    (2, 9) => self.index = fonts::FONT_MEMORY_START + (5 * self.registers[x as usize] as u16),
+
+                    _ => panic!("Error Could Not Interpret Instrution {:x}", opcode),
+                }
             }
 
-            _ => panic!("Error Could Not Interpret Instruction {:x}", opcode)
+            _ => panic!("Error Could Not Interpret Instruction {:x}", opcode),
         }
     }
 }
