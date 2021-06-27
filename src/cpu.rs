@@ -93,32 +93,43 @@ impl CHIP_8
         None
     }
 
+    fn opcode_not_found(opcode: u16)
+    {
+        panic!("Error Could Not Interpret Opcode: {:x}", opcode);
+    }
+
     fn fetch_and_execute(&mut self)
     {
         let opcode = self.mem_read_u16();
 
-        let nib_1 = ((opcode & 0xF000) << 12) as u8;
-        let nib_2 = ((opcode & 0x0F00) << 8) as u8;
-        let nib_3 = ((opcode & 0x00F0) << 4) as u8;
-        let nib_4 = (opcode & 0x000F) as u8;
+        let first = ((opcode & 0xF000) << 12) as u8;
 
-        match (nib_1, nib_2, nib_3, nib_4)
+        match first
         {
-            (0, _, 0xE, 0) => self.video = [false; VIDEO_BUFFER_SIZE],
-
-            (0, _, 0xE, 0xE) =>
+            0x0 =>
             {
-                self.stack_pointer -= 1;
-                self.program_counter = self.stack[self.stack_pointer as usize];
+               let identifier = opcode & 0x000F;
+               match nib_4
+               {
+                    0x0 => self.video = [false; VIDEO_BUFFER_SIZE],
+
+                    0xE =>
+                    {
+                        self.stack_pointer -= 1;
+                        self.program_counter = self.stack[self.stack_pointer as usize];
+                    }
+
+                    _ => CHIP_8::opcode_not_found(opcode),
+               }
             },
 
-            (1, _, _, _) =>
+            0x1 =>
             {
                 let nnn = opcode & 0x0FFF;
                 self.program_counter = nnn;
             },
 
-            (2, _, _, _) =>
+            0x2 =>
             {
                 let nnn = opcode & 0x0FFF;
                 self.stack[self.stack_pointer as usize] = self.program_counter;
@@ -126,47 +137,62 @@ impl CHIP_8
                 self.program_counter = nnn;
             },
 
-            (3, x, _, _) =>
+            0x3 =>
             {
                 let kk = (opcode & 0x00FF) as u8;
-                if self.registers[x as usize] == kk
+                let x = ((opcode & 0x0F00) >> 8) as usize;
+
+                if self.registers[x] == kk
                 {
                     self.program_counter += 2;
                 }
             },
 
-            (4, x, _, _) =>
+            0x4 =>
             {
                 let kk = (opcode & 0x00FF) as u8;
-                if self.registers[x as usize] != kk
+                let x = ((opcode & 0x0F00) >> 8) as usize;
+
+                if self.registers[x] != kk
                 {
                     self.program_counter += 2;
                 }
             },
 
-            (5, x, y, _) =>
+            0x4 =>
             {
-                if self.registers[x as usize] == self.registers[y as usize]
+                let x = ((opcode & 0x0F00) >> 8) as usize;
+                let y = ((opcode & 0x00F0) >> 4) as usize;
+
+                if self.registers[x] == self.registers[y]
                 {
                     self.program_counter += 2;
                 }
             },
 
-            (6, x, _, _) =>
+            0x6 =>
             {
                 let kk = (opcode & 0x00FF) as u8;
-                self.registers[x as usize] = kk;
+                let x = ((opcode & 0x0F00) >> 8) as usize;
+
+                self.registers[x] = kk;
             },
 
-            (7, x, _, _) =>
+            0x7 =>
             {
                 let kk = (opcode & 0x00FF) as u8;
-                self.registers[x as usize] += kk;
+                let x = ((opcode & 0x0F00) >> 8) as usize;
+
+                self.registers[x] += kk;
             },
 
-            (8, x, y, i) =>
+            0x8 =>
             {
-                match i
+                let x = ((opcode & 0x0F00) >> 8) as usize;
+                let y = ((opcode & 0x00F0) >> 8) as usize;
+                let identifier = opcode & 0x000F;
+
+                match identifier
                 {
                     0 => self.registers[x as usize] = self.registers[y as usize],
 
