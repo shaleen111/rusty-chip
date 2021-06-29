@@ -86,16 +86,19 @@ impl Chip8
     {
         self.fetch_and_execute();
 
-        self.time_since_timer_decrement = Instant::now();
-
-        if self.delay_timer > 0
+        if self.time_since_timer_decrement.elapsed() > Duration::from_millis(20)
         {
-            self.delay_timer -= 1;
-        }
+            self.time_since_timer_decrement = Instant::now();
 
-        if self.sound_timer > 0
-        {
-            self.sound_timer -= 1;
+            if self.delay_timer > 0
+            {
+                self.delay_timer -= 1;
+            }
+
+            if self.sound_timer > 0
+            {
+                self.sound_timer -= 1;
+            }
         }
     }
 
