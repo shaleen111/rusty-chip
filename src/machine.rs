@@ -1,11 +1,10 @@
 use std::fs::File;
 use std::io::Read;
-use std::time::{Instant, Duration};
 
 use rand;
 use rand::Rng;
 
-use crate::fonts;
+use crate::fonts::{FONT_MEMORY_START, FONTS};
 
 pub const VIDEO_WIDTH: usize = 64;
 pub const VIDEO_HEIGHT: usize = 32;
@@ -13,7 +12,7 @@ const VIDEO_BUFFER_SIZE: usize = VIDEO_WIDTH * VIDEO_HEIGHT;
 
 const ROM_MEMORY_START: u16 = 0x200;
 
-const NUM_KEYS: u8 = 16;
+pub const NUM_KEYS: usize = 16;
 
 pub struct Chip8
 {
@@ -26,15 +25,15 @@ pub struct Chip8
     stack: [u16; 16],
     stack_pointer: u8,
 
-    time_since_timer_decrement: Instant,
-    pub delay_timer: u8,
-    pub sound_timer: u8,
+    delay_timer: u8,
+    sound_timer: u8,
 
-    pub keypad: [bool; NUM_KEYS as usize],
-    pub video: [bool; VIDEO_BUFFER_SIZE],
-    pub redraw: bool,
+    keypad: [bool; NUM_KEYS],
+    video: [bool; VIDEO_BUFFER_SIZE],
+    redraw: bool,
 }
 
+// Public
 impl Chip8
 {
     pub fn new() -> Self
@@ -50,19 +49,15 @@ impl Chip8
             stack: [0; 16],
             stack_pointer: 0,
 
-            time_since_timer_decrement: Instant::now(),
             delay_timer: 0,
             sound_timer: 0,
 
-            keypad: [false; 16],
+            keypad: [false; NUM_KEYS],
             video: [false; VIDEO_BUFFER_SIZE],
             redraw: true,
         };
 
-        for i in 0..fonts::FONTS.len()
-        {
-            c.memory[fonts::FONT_MEMORY_START as usize + i]  = fonts::FONTS[i];
-        }
+        c.memory[FONT_MEMORY_START as usize ..= FONT_MEMORY_START as usize + FONTS.len()].copy_from_slice(&FONTS);
 
         c
     }
@@ -84,24 +79,29 @@ impl Chip8
 
     pub fn cycle(&mut self)
     {
-        self.fetch_and_execute();
+        let opcode = self.mem_read_u16();
+        self.execute(opcode);
+    }
 
-        if self.time_since_timer_decrement.elapsed() > Duration::from_millis(20)
+    pub fn decrement_timers(&mut self)
+    {
+        if self.delay_timer > 0
         {
-            self.time_since_timer_decrement = Instant::now();
+            self.delay_timer -= 1;
+        }
 
-            if self.delay_timer > 0
-            {
-                self.delay_timer -= 1;
-            }
-
-            if self.sound_timer > 0
-            {
-                self.sound_timer -= 1;
-            }
+        if self.sound_timer > 0
+        {
+            self.sound_timer -= 1;
         }
     }
 
+}
+
+
+// Private
+impl Chip8
+{
     fn mem_read_u16(&mut self) -> u16
     {
         let most_sig_byte = (self.memory[self.program_counter as usize] as u16) << 8;
@@ -109,16 +109,17 @@ impl Chip8
 
         self.program_counter += 2;
 
-        most_sig_byte | least_sig_byte
+        let ret = most_sig_byte | least_sig_byte;
+        ret
     }
 
     fn check_keypad(&self) -> Option<u8>
     {
         for i in 0..NUM_KEYS
         {
-            if self.keypad[i as usize]
+            if self.keypad[i]
             {
-                return Some(i);
+                return Some(i as u8);
             }
         }
         None
@@ -132,10 +133,8 @@ impl Chip8
     // To make the matching easier we can think of opcodes in general being made up of 3 parts:
     // FIRST NIBBLE - (OPTIONAL) ARGS / ADDITIONAL IDENTIFIER - ADDITIONAL IDENTIFIER
     // Eg - 00E0, 1nnn, 8xy7, Fx15
-    fn fetch_and_execute(&mut self)
+    fn execute(&mut self, opcode: u16)
     {
-        let opcode = self.mem_read_u16();
-
         let first = ((opcode & 0xF000) >> 12) as u8;
 
         match first
@@ -145,7 +144,10 @@ impl Chip8
                let identifier = opcode & 0x000F;
                match identifier
                {
-                    0x0 => self.video = [false; VIDEO_BUFFER_SIZE],
+                    0x0 =>
+                    {
+                        self.video = [false; VIDEO_BUFFER_SIZE];
+                    },
 
                     0xE =>
                     {
@@ -238,9 +240,9 @@ impl Chip8
 
                     0x4 =>
                     {
-                        let (sum, overflow) = self.registers[x].overflowing_add(self.registers[y]);
+                        let (sum, carry) = self.registers[x].overflowing_add(self.registers[y]);
 
-                        if overflow
+                        if carry
                         {
                             self.registers[0xF] = 1;
                         }
@@ -254,9 +256,9 @@ impl Chip8
 
                     0x5 =>
                     {
-                        let (diff, overflow) = self.registers[x].overflowing_sub(self.registers[y]);
+                        let (diff, borrow) = self.registers[x].overflowing_sub(self.registers[y]);
 
-                        if overflow
+                        if borrow
                         {
                             self.registers[0xF] = 0;
                         }
@@ -276,9 +278,9 @@ impl Chip8
 
                     0x7 =>
                     {
-                        let (diff, overflow) = self.registers[y].overflowing_sub(self.registers[x]);
+                        let (diff, borrow) = self.registers[y].overflowing_sub(self.registers[x]);
 
-                        if overflow
+                        if borrow
                         {
                             self.registers[0xF] = 0;
                         }
@@ -292,8 +294,8 @@ impl Chip8
 
                     0xE =>
                     {
-                        self.registers[0xF] = (self.registers[x] & 0x80) >> 7;
-                        self.registers[y] <<= 1;
+                        self.registers[0xF] = (self.registers[x] >> 7) & 1;
+                        self.registers[x] <<= 1;
                     }
 
                     _ => Chip8::opcode_not_found(opcode),
@@ -313,12 +315,11 @@ impl Chip8
 
             0xA => self.index = opcode & 0x0FFF,
 
-            0xB => self.program_counter = (opcode & 0x0FFF) + self.registers[0] as u16,
+            0xB => self.program_counter = (opcode & 0x0FFF) + (self.registers[0] as u16),
 
             0xC =>
             {
-                let mut rng = rand::thread_rng();
-                let ran_byte = rng.gen::<u8>();
+                let ran_byte: u8 = rand::thread_rng().gen();
 
                 let kk = (opcode & 0x00FF) as u8;
                 let x = ((opcode & 0x0F00) >> 8) as usize;
@@ -335,26 +336,35 @@ impl Chip8
                 let x = self.registers[x];
                 let y = self.registers[y];
 
+                let mut collision = false;
+
                 for i in 0..n
                 {
                     let row_of_sprite = self.memory[self.index as usize + i];
                     for j in 0..8
                     {
                         let pixel = (row_of_sprite & (0x80 >> j)) != 0;
+                        let pixel_y = (y as usize + i) % VIDEO_HEIGHT;
+                        let pixel_x = (x as usize + j) % VIDEO_HEIGHT;
 
-                        let video_pixel = &mut self.video[((y as usize + i) * VIDEO_WIDTH + (x as usize + j)) % (VIDEO_WIDTH * VIDEO_HEIGHT)];
+                        let video_pixel = &mut self.video[pixel_y * VIDEO_WIDTH + pixel_x];
 
                         if pixel
                         {
-                            if *video_pixel
-                            {
-                                self.registers[0xF] = 1;
-                            }
+                            collision |= *video_pixel;
                             *video_pixel ^= true;
                             self.redraw = true;
                         }
-
                     }
+                }
+
+                if collision
+                {
+                    self.registers[0xF] = 1;
+                }
+                else
+                {
+                    self.registers[0xF] = 0;
                 }
             },
 
@@ -409,7 +419,7 @@ impl Chip8
 
                     0x1E => self.index = self.index.wrapping_add(self.registers[x] as u16),
 
-                    0x29 => self.index = fonts::FONT_MEMORY_START + (5 * self.registers[x] as u16),
+                    0x29 => self.index = FONT_MEMORY_START + (5 * self.registers[x] as u16),
 
                     0x33 =>
                     {
